@@ -1,0 +1,130 @@
+PROCESSOR 16F887	; direttiva che definisce il tipo di processore
+	#include <xc.inc>	; file che contiene le definizioni dei simboli (nomi registri, nomi bit dei registri, ecc).
+	; configuration bits
+	CONFIG "FOSC = INTRC_NOCLKOUT"// Ext Oscillator Selection->Oscillator not enabled
+	CONFIG "CP = OFF"             // PFM and Data EEPROM code protection disabled
+	CONFIG "CPD = OFF"            // Data memory code protection is disabled
+	CONFIG "WDTE = OFF"            // WDT Disabled
+	CONFIG "BOREN = OFF"	      // Brown-out Reset disabled
+	CONFIG "PWRTE = OFF"	      // Power-up Timer is disabled
+	CONFIG "LVP = OFF"            // Low voltage programming disabled 
+				      // LVP disattivato (_LVP_OFF), altrimenti il pin RB3 (porta B) 
+				      // non può essere utilizzato come I/O generico.
+				      // (_LVP_ON -> RB3/PGM come PGM pin cioè per ICSP = In-Circuit Serial Programming)
+	CONFIG "DEBUG = OFF"          // Background debugger disabled
+	CONFIG  "BOR4V = BOR21V"       // Brown-out Reset Selection bit (Brown-out Reset set to 2.1V)
+	CONFIG  "WRT = OFF"            // Flash Program Memory Self Write Enable bits (Write protection off)
+
+	
+tmr_1000ms	EQU	(65536 - 32768) ; variabile temporale per il timer1 affincjè conti 1 secondo
+
+PSECT udata_shr
+output_led:
+    DS         1                   ; riserva un byte di memoria associato alla label output_led (= stato LED)
+w_temp:
+    DS		1			; riserva un byte di memoria associato alla label w_temp
+status_temp:
+    DS		1			; riserva un byte di memoria associato alla label status_temp
+pclath_temp:
+    DS		1			; riserva un byte di memoria associato alla label pclath_temp
+; direttiva per il reset vector
+PSECT reset_vec,class=CODE,delta=2
+reset_vec:
+			pagesel	start			
+			goto	start			
+PSECT MainCode,global,class=CODE,delta=2			
+
+start:
+		banksel OSCCON ; configura la frequenza di clock
+		movlw 01110101B
+		movwf OSCCON
+		
+		banksel T1CON 
+		movlw 00000011B  
+		movwf T1CON	
+		clrf TMR1L       
+		clrf TMR1H	 
+		
+		
+		banksel TRISD ;tutti i bit del registro tris d vengono messi a zero per configurare tutti i led come output
+		clrf TRISD
+		
+		banksel PORTD ; abilita la direzionalità della porta D
+		clrf PORTD 
+		
+		banksel PIR1 ;registro che contiene i bit di flag delle periferiche esterne che possono generare un interrupt
+		clrf PIR1 ; azzera bit di flag dalle periferiche 
+		
+		banksel INTCON;setto il global interrupt enable e il periferical interrupt enable
+		movlw 11000000B
+		movwf INTCON
+		
+		banksel PIE1 
+		movlw 00100001B  ; abilita interrupt periferiche timer1 e usart
+		movwf PIE1
+				
+		banksel RCREG
+		movf RCREG,w      ; elimina eventuali byte rimasti nella FIFO
+		
+main_loop:
+    goto main_loop
+    
+    MOVE_LED:
+			bcf	STATUS,STATUS_C_POSITION		
+			rlf	output_led,f	
+			btfss	output_led,4	
+			goto	led_ok			
+			movlw	0x01			
+			movwf	output_led		
+			
+    led_ok:			
+			movf	output_led,w	
+			banksel	PORTD		
+			movwf	PORTD		
+					
+    reload_timer1:
+			
+			banksel TMR1L
+			movf tmr_1000ms, w
+			movwf TMR1L
+			movf tmr_1000ms, w
+			movwf TMR1H
+			banksel PIR1
+			bcf PIR1, PIR1_TMR1IF_POSITION ; Azzera flag interrupt
+			banksel T1CON
+			bsf T1CON, T1CON_TMR1ON_POSITION ; Riavvia Timer1
+			goto main_loop
+   
+  
+PSECT isrVec,class=CODE,delta=2
+isr:
+    ;context saving, serve per salavare l'indirizzo della successiva istruzione, da cui la cpu riprende a svolgere il programma dopo l'esecuzione dell'isr
+	movwf	w_temp			; copia W in w_temp
+	swapf	STATUS,w		; inverte i nibble di STATUS salvando il risultato in W.
+					; Questo trucco permette di copiare STATUS senza alterarlo
+					; (swapf è una delle poche istruzioni che non alterano i bit di stato).
+	movwf	status_temp		; copia W (= STATUS) in status_temp (con i nibble invertiti).
+	movf	PCLATH,w		; copia il registro PCLATH in W (registro da salvare perché contiene i
+					; bit più significativi del program counter, usati da GOTO e CALL,
+					; e settati dalla direttiva pagesel).
+	movwf	pclath_temp		; copia W (= PCLATH) in pclath_temp.
+
+test_timer1:;controllo se l'interrupt è stato generato dal timer 1
+	btfss PIR1,PIR1_TMR1IF_POSITION
+	goto irq_end
+	btfss PIE1,PIE1_TMR1IE_POSITION
+	goto MOVE_LED
+	;ora devo azzerrare gli interrupt flag altrimenti rimarrà attivo e verrà automaticamente generato un interrupt
+	bsf PIE1, PIE1_TMR1IE_POSITION 
+	bcf PIR1, PIR1_TMR1IF_POSITION
+	goto irq_end
+irq_end:
+		; ripristina registri
+		swapf status_temp, w
+		movwf STATUS
+		swapf w_temp, f
+		swapf w_temp, w
+		retfie
+
+		
+end reset_vec
