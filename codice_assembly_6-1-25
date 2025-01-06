@@ -1,0 +1,282 @@
+PROCESSOR 16F887    ; direttiva che definisce il tipo di processore
+#include <xc.inc>   ; file che contiene le definizioni dei simboli (nomi registri, nomi bit dei registri, ecc).
+; configuration bits
+CONFIG "FOSC = INTRC_NOCLKOUT"    ; Oscillatore interno abilitato, senza uscita clock
+CONFIG "CP = OFF"                ; Protezione codice disabilitata
+CONFIG "CPD = OFF"               ; Protezione dati EEPROM disabilitata
+CONFIG "WDTE = OFF"              ; Watchdog Timer disabilitato
+CONFIG "BOREN = OFF"             ; Brown-out Reset disabilitato
+CONFIG "PWRTE = OFF"             ; Power-up Timer disabilitato
+CONFIG "LVP = OFF"               ; Programmazione a bassa tensione disabilitata
+CONFIG "DEBUG = OFF"             ; Debugger disabilitato
+CONFIG "BOR4V = BOR21V"          ; Brown-out Reset a 2.1V
+CONFIG "WRT = OFF"               ; Protezione scrittura Flash disabilitata
+
+ 
+PSECT udata_shr
+    output_led:	    DS 1                 ; Stato corrente del LED
+    w_temp:	    DS 1                 ; Temporanea per il registro W
+    status_temp:    DS 1                ; Temporanea per STATUS
+    pclath_temp:    DS 1                ; Temporanea per PCLATH
+    direction:	    DS 1   ; 0 = direzione sinistra, 1=direzione destra
+    tmp:	    DS 1
+    pause_flag:	    DS 1; Flag di pausa (1 = pausa, 0 = rotazione)
+    low_tmr_1000ms:  DS 1
+    high_tmr_1000ms:	DS 1
+    delta:	    DS 1
+    
+ ; Reset vector
+PSECT reset_vec,class=CODE,delta=2
+reset_vec:
+    pagesel start
+    goto start
+
+PSECT MainCode,global,class=CODE,delta=2
+start:
+    ; Configurazione Oscillatore (2 MHz)
+    banksel OSCCON 
+    movlw 01011001B
+    movwf OSCCON
+    
+    banksel INTCON;setto il global interrupt enable e il periferical interrupt enable
+    movlw 11000000B
+    movwf INTCON
+
+    ; Configurazione Timer1
+    banksel T1CON
+    movlw 00110001B               ; Prescaler 1:8, clock interno, Timer1 abilitato
+    movwf T1CON
+    clrf TMR1L
+    clrf TMR1H
+    
+
+    ; Configurazione PORTD come output
+    banksel TRISD
+    clrf TRISD
+    banksel PORTD
+    clrf PORTD
+
+    ; Configurazione interrupt
+    banksel PIR1
+    clrf PIR1                     ; Azzera tutti i flag
+    
+    banksel PIE1 
+    movlw 00100001B  ; abilita interrupt periferiche timer1 e usart
+    movwf PIE1
+    
+    banksel INTCON
+    movlw 11000000B               ; Abilita interrupt globale e periferico
+    movwf INTCON
+
+    ; Inizializza il registro per la rotazione LED
+    banksel PORTD
+    movlw 0x01                    ; Imposta il primo LED acceso
+    movwf output_led
+    
+    banksel TXSTA
+    movlw 00100110B
+    movwf TXSTA
+    
+    banksel RCSTA
+    movlw 10010000B
+    movwf RCSTA
+    
+    banksel BAUDCTL
+    clrf BAUDCTL
+    
+    banksel SPBRG
+    movlw 12
+    movwf SPBRG
+    
+    banksel direction
+    clrf direction    ; 0 = direzione sinistra
+    
+    banksel low_tmr_1000ms
+    movlw 128
+    movwf low_tmr_1000ms
+    
+    banksel high_tmr_1000ms
+    movlw 128
+    movwf high_tmr_1000ms
+    
+    banksel delta
+    movlw 50
+    movwf delta
+    
+    
+main_loop:
+    goto main_loop                ; Loop principale (gli interrupt gestiscono il resto)
+
+; Funzione MOVE_LED: Rotazione dei LED
+MOVE_LED:
+    banksel pause_flag
+    movf pause_flag, w         ; Controlla se la pausa è attiva
+    btfsc STATUS, STATUS_Z_POSITION
+    return                     ; Se pausa_flag è 1, esci (stoppa la rotazione)
+
+    banksel direction
+    movf direction, w         ; Leggi la direzione corrente
+    btfsc STATUS,STATUS_Z_POSITION           ; Se Z=0 (direzione=0), esegui shift sinistra
+    goto shift_left           ; Altrimenti, shift destra
+
+shift_right:
+    bcf STATUS, STATUS_C_POSITION ; Azzeramento carry
+    rrf output_led, f             ; Shift a destra con carry
+    btfss output_led, 0           ; Se il bit 0 è acceso, cambia direzione
+    goto led_ok
+    ; Cambia direzione a sinistra
+    movlw 0x01
+    movwf output_led
+    banksel direction
+    clrf direction                ; Imposta direzione = sinistra
+    goto led_ok
+
+shift_left:
+    bcf STATUS, STATUS_C_POSITION ; Azzeramento carry
+    rlf output_led, f             ; Shift a sinistra con carry
+    btfss output_led, 4           ; Se il bit 4 è acceso, cambia direzione
+    goto led_ok
+    ; Cambia direzione a destra
+    movlw 0x04
+    movwf output_led
+    banksel direction
+    movlw 0x01
+    movwf direction               ; Imposta direzione = destra
+
+led_ok:
+    movf output_led, w            ; Aggiorna PORTD
+    banksel PORTD
+    movwf PORTD
+    return
+
+; Funzione RELOAD_TIMER1: Ricarica il timer per 1 secondo
+reload_timer1:
+    banksel T1CON
+    bcf T1CON, T1CON_TMR1ON_POSITION  ; Arresta il timer
+
+    banksel low_tmr_1000ms
+    movf low_tmr_1000ms, w
+    movwf TMR1L                     ; Carica il valore basso
+
+    banksel high_tmr_1000ms
+    movf high_tmr_1000ms, w
+    movwf TMR1H                     ; Carica il valore alto
+
+    banksel PIR1
+    bcf PIR1, PIR1_TMR1IF_POSITION  ; Azzera il flag interrupt Timer1
+
+    banksel T1CON
+    bsf T1CON, T1CON_TMR1ON_POSITION ; Riattiva il timer
+    return
+
+
+; Funzione per mettere in pausa
+pausa:
+    banksel T1CON
+    bcf T1CON, T1CON_TMR1ON_POSITION  ; Arresta il timer
+    banksel pause_flag
+    movlw 1
+    movwf pause_flag               ; Setta il flag di pausa
+    banksel PIR1           ; Seleziona la banca contenente PIR1
+    bcf PIR1, PIR1_RCIF_POSITION ; Resetta il flag RCIF (bit 5 di PIR1)
+    return
+
+; Funzione per riprendere
+restart:             ; Resetta il flag di pausa         
+    banksel PORTD
+    movf output_led, w 
+    movwf PORTD
+    banksel PIR1           ; Seleziona la banca contenente PIR1
+    bcf PIR1, PIR1_RCIF_POSITION
+    banksel T1CON
+    bsf T1CON, T1CON_TMR1ON_POSITION  ; Riattiva il timer
+    return
+
+accelera_shift_led:                  ; Se pausa_flag è 1, esci (stoppa la rotazione)
+    banksel low_tmr_1000ms
+    movf low_tmr_1000ms, w
+    addwf delta, w
+    btfsc STATUS,STATUS_C_POSITION   ; Controlla se c'è stato un carry (overflow)
+    movlw 220			      ; Se sì, forza il valore massimo
+    movwf low_tmr_1000ms
+    banksel high_tmr_1000ms
+    movf high_tmr_1000ms, w
+    addwf delta, w
+    btfsc STATUS,STATUS_C_POSITION
+    movlw 220
+    movwf high_tmr_1000ms
+    call reload_timer1
+    return
+    
+
+rallenta_shift_led:
+    ; Diminuisci low_tmr_1000ms
+    banksel low_tmr_1000ms
+    movf low_tmr_1000ms, w       ; Carica il valore corrente
+    subwf delta, w               ; Sottrai il valore di delta
+    btfss STATUS, STATUS_C_POSITION ;sottrai il valore di delta a w, se c'è statao un carry allora fai l'istruzione sennò salta
+    movlw 0
+    movwf low_tmr_1000ms; Aggiorna il timer
+    banksel high_tmr_1000ms
+    movf high_tmr_1000ms, w
+    subwf delta, w 
+    btfss STATUS, STATUS_C_POSITION ; Se il risultato è positivo
+    movlw 0
+    movwf high_tmr_1000ms
+    call reload_timer1
+    return
+
+
+    
+; Gestione interrupt
+PSECT isrVec,class=CODE,delta=2
+isr:
+    movwf w_temp                   ; Salva registro W
+    swapf STATUS, w
+    movwf status_temp              ; Salva STATUS
+    movf PCLATH, w
+    movwf pclath_temp              ; Salva PCLATH
+
+test_timer1:
+    banksel PIR1
+    btfss PIR1, PIR1_TMR1IF_POSITION
+    goto test_usart                ; Se non è Timer1, controlla se l'interrupt è stato generato dall'usart 
+    call MOVE_LED                  ; Ruota i LED
+    call reload_timer1             ; Ricarica il timer1             
+
+test_usart:    ;controllo se l'interrupt è stato generato dalla porta seriale
+    banksel PIR1
+    btfss PIR1,PIR1_RCIF_POSITION
+    goto irq_end
+    banksel RCREG
+    movf RCREG,w
+    movwf tmp         ; memorizza byte ricevuto in "tmp"
+    ; interpretazione comando
+    movlw 'p'
+    subwf tmp,w
+    btfsc STATUS,STATUS_Z_POSITION    ; confronta tmp con 'p'
+    call pausa   ; se uguale, chiama pausa
+    movlw 'r'
+    subwf tmp,w
+    btfsc STATUS,STATUS_Z_POSITION    ; confronta tmp con 'r'
+    call restart
+    movlw '+'
+    subwf tmp,w
+    btfsc STATUS,STATUS_Z_POSITION    ; confronta tmp con 'p'
+    call accelera_shift_led  ; se uguale, chiama accelera_shift_led
+    movlw '-'
+    subwf tmp,w
+    btfsc STATUS,STATUS_Z_POSITION    ; confronta tmp con 'p'
+    call rallenta_shift_led   ; se uguale, chiama rallensta_shift led
+    goto irq_end
+    
+
+irq_end:
+    ; Ripristina registri
+    swapf status_temp, w
+    movwf STATUS
+    swapf w_temp, f
+    swapf w_temp, w
+    retfie
+
+END reset_vec
