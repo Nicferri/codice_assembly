@@ -1,3 +1,19 @@
+;   Autore: 
+;   Nicola Ferri, num. matricola:1109906
+;   Marco Mazzarini, num. matricola: 1109734
+;
+;
+;                             DESCRIZIONE
+;   Si realizzi un firmware che faccia scorrere un LED acceso da destra a sinistra e 
+;   viceversa; dei comandi ricevuti dalla porta seriale (USART) permettano di aumentare 
+;   e diminuire la velocità di scorrimento, e arrestare e far ripartire il lampeggio.
+;   Descrizione hardware:
+;   - scheda Cedar "Pic Board - Studio" 
+;   - MCU: PIC16F887 (clock interno 2 MHz)
+
+
+
+
 PROCESSOR 16F887    ; direttiva che definisce il tipo di processore
 #include <xc.inc>   ; file che contiene le definizioni dei simboli (nomi registri, nomi bit dei registri, ecc).
 ; configuration bits
@@ -13,80 +29,89 @@ CONFIG "BOR4V = BOR21V"          ; Brown-out Reset a 2.1V
 CONFIG "WRT = OFF"               ; Protezione scrittura Flash disabilitata
 
  
-PSECT udata_shr
-    output_led:	    DS 1                 ; Stato corrente del LED
-    w_temp:	    DS 1                 ; Temporanea per il registro W
-    status_temp:    DS 1                ; Temporanea per STATUS
-    pclath_temp:    DS 1                ; Temporanea per PCLATH
-    direction:	    DS 1   ; 0 = direzione sinistra, 1=direzione destra
-    tmp:	    DS 1
-    pause_flag:	    DS 1; Flag di pausa (1 = pausa, 0 = rotazione)
-    low_tmr_1000ms:  DS 1
-    high_tmr_1000ms:	DS 1
-    delta:	    DS 1
+PSECT udata_shr                       ; direttiva che definisce una nuova sezione di memoria condivisa
+; Variabili utilizzate per salvare lo stato della CPU all'ingresso dell'ISR
+    w_temp:	         DS 1             ; Temporanea per il registro W
+    status_temp:     DS 1             ; Temporanea per STATUS
+    pclath_temp:     DS 1             ; Temporanea per PCLATH
+    output_led:	     DS 1             ; variabile che conserva in memoria lo stato dei led
+    direction:	      DS 1             ; variabile che conserva in memoria la direzione di scorrimento: 0 = direzione sinistra, 1=direzione destra
+    tmp:	            DS 1
+    pause_flag:	     DS 1             ; Flag di pausa (1 = pausa, 0 = rotazione)
+    low_tmr_1000ms:  DS 1             ; variabile per il conteggio iniziale del timer1 da inserire nel TMR1L
+    high_tmr_1000ms:	DS 1             ; variabile per il conteggio iniziale del timer1 da inserire nel TMR1H
+    delta:	          DS 1             ; variabile temporale che viene sommata o sottratta alle variabili caricate nel timer1 a seconda del pulsante ceh è stato premuto
     
- ; Reset vector
+; Reset vector
+; Il vettore di reset è l'istruzione che viene eseguita per prima dopo un reset del microcontrollore.
+; La direttiva CODE dichiara una sezione di codice da allocare in ROM.Un delta di 2 significa che 
+; le istruzioni in questa sezione saranno allineate a parole di 2 byte
+
 PSECT reset_vec,class=CODE,delta=2
 reset_vec:
-    pagesel start
-    goto start
+   pagesel	start			                   ; imposta la pagina della memoria di programma in cui si trova l'indirizzo della label start
+			goto	start			                      ; salta all'indirizzo indicato dalla label start
 
+
+; PROGRAMMA PRINCIPALE
 PSECT MainCode,global,class=CODE,delta=2
 start:
-    ; Configurazione Oscillatore (2 MHz)
-    banksel OSCCON 
-    movlw 01011001B
-    movwf OSCCON
-    
-    banksel INTCON;setto il global interrupt enable e il periferical interrupt enable
-    movlw 11000000B
-    movwf INTCON
+    ; Configurazione oscillatore interno
+    banksel OSCCON                   ; banco di OSCCON                   
+    movlw   01010001B                ; carica costante binaria 01011001 in w
+    movwf   OSCCON                   ; copia w in OSCCON, con la combinazione dei bit 6-5-4, IRCF <2:0>, configuro la frequenza del clock interno a 2 MHz
+
+    ; Abilitazione sorgenti di interrupt 
+    banksel INTCON                   ; banco di INTCON
+    movlw   11000000B                ; carica costante binaria 11000000 in w
+    movwf   INTCON                   ; copia w in INTCON, setto il global interrupt enable e il peripheral interrupt enable
 
     ; Configurazione Timer1
-    banksel T1CON
-    movlw 00110001B               ; Prescaler 1:8, clock interno, Timer1 abilitato
-    movwf T1CON
-    clrf TMR1L
-    clrf TMR1H
+    banksel T1CON                   ; banco di T1CON
+    movlw   00110001B               ; carica costante binaraia 00110001 in w
+    movwf   T1CON                   ; copia w in T1CON: bit-0 ovvero TMR1ON=1 abilita il timer1, bit-1 TMR1CS=0, seleziona come sorgente di clock quella interna(Fosc/4), 
+                                    ;con i bit 5-4 T1CKPS<1:0> imposto un prescarler pari a 8, 
+    clrf    TMR1L  
+    clrf    TMR1H
     
 
     ; Configurazione PORTD come output
-    banksel TRISD
-    clrf TRISD
-    banksel PORTD
-    clrf PORTD
+    banksel TRISD                   ; banco di TRISD
+    clrf TRISD                      ; in questo modo forzando tutti i bit a 0, configuro tutti i led come output 
 
+    ; Configura PORTD
+    banksel PORTD                   ; banco di PORTD
+    movlw 0x01                      ; carica costante binaria 0x01 in w, per accendere il primo led 
+    movwf PORTD                     ; copia w in PORTD
+    
     ; Configurazione interrupt
-    banksel PIR1
-    clrf PIR1                     ; Azzera tutti i flag
+    banksel PIR1                    ; banco di PIR1
+    clrf PIR1                       ; Azzera tutti i flag
     
-    banksel PIE1 
-    movlw 00100001B  ; abilita interrupt periferiche timer1 e usart
-    movwf PIE1
+    banksel PIE1                    ; banco di PIE1
+    movlw 00100001B                 ; carica costante variabile 00100001 in w, per abilitare le richieste di interrupt dell'usart in ricezione e quelle generate dall'overflow del timer1 
+    movwf PIE1                      ; copia w in PIE1
+      
+    ;Configurazione USART
+    banksel TXSTA                   ; banco di TXSTA
+    movlw 00000110B                 ; carica costante variabile 00000110 in w. Azzera il bit SYNC in modo tale che la porta seriale lavori in modalità asincrona, mentre setta il bit BRGH(high speed) 
+    movwf TXSTA                     ; copia w in TXSTA
     
-    banksel INTCON
-    movlw 11000000B               ; Abilita interrupt globale e periferico
-    movwf INTCON
-
-    ; Inizializza il registro per la rotazione LED
-    banksel PORTD
-    movlw 0x01                    ; Imposta il primo LED acceso
+    banksel RCSTA                   ; banco di RCSTA
+    movlw 10010000B                 ; carica costante variabile 10010000 in w. Setta il bit SPEN, abilitando il bit di abilitazione della porta seriale, setta il bit CREN, abilitando la ricezione in modalità asincrona 
+    movwf RCSTA                     ; copia w in RCSTA
+    
+    banksel BAUDCTL                 ; banco di BAUDCTL
+    clrf BAUDCTL                    ; azzera il bit BRG16, quindi utilizza un generatore di baud rate a 8 bit
+    
+    banksel SPBRG                   ; banco di SPBRG
+    movlw 12                        ; carica 12(valore ricavato dalle tabelle del datasheet) in w, per avere un baud rate pari a 9600
+    movwf SPBRG                     ; copia w in SPBRG
+    
+     ; Inizializza il registro per la rotazione LED
+    banksel output_led
+    movlw 0x01                    ; Imposta il primo LED acceso (LED0)
     movwf output_led
-    
-    banksel TXSTA
-    movlw 00100110B
-    movwf TXSTA
-    
-    banksel RCSTA
-    movlw 10010000B
-    movwf RCSTA
-    
-    banksel BAUDCTL
-    clrf BAUDCTL
-    
-    banksel SPBRG
-    movlw 12
-    movwf SPBRG
     
     banksel direction
     clrf direction    ; 0 = direzione sinistra
@@ -214,13 +239,13 @@ rallenta_shift_led:
     banksel low_tmr_1000ms
     movf low_tmr_1000ms, w       ; Carica il valore corrente
     subwf delta, w               ; Sottrai il valore di delta
-    btfss STATUS, STATUS_C_POSITION ;sottrai il valore di delta a w, se c'è statao un carry allora fai l'istruzione sennò salta
+    btfsc STATUS, STATUS_C_POSITION ;
     movlw 0
     movwf low_tmr_1000ms; Aggiorna il timer
     banksel high_tmr_1000ms
     movf high_tmr_1000ms, w
     subwf delta, w 
-    btfss STATUS, STATUS_C_POSITION ; Se il risultato è positivo
+    btfsc STATUS, STATUS_C_POSITION ; Se il risultato è positivo
     movlw 0
     movwf high_tmr_1000ms
     call reload_timer1
