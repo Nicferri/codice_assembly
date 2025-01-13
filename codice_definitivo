@@ -245,7 +245,7 @@ accelera_shift_led:
 
     ; Controlla se temp1 supera 229
     movlw 229                 ; copia la variabile decimale 229 in w
-    subwf temp1, w            ; sottrai 228 a temp1 e copia il risultato in w
+    subwf temp1, w            ; sottrai 229 a temp1 e copia il risultato in w
     btfsc STATUS,STATUS_C_POSITION           ; l'istruzione subwf f,d setta il bit C del registro status nel caso in cui 
    ;la sottrazione ha risultato maggiore o uguale di 0, oppure azzera il bit C se la sottrazione ha risultato negativo,
    ;quindi se il bit C è 0(risultato negativo) salta la prossima istruzione, altrimenti esegui la prossima istruzione
@@ -267,7 +267,7 @@ check_high:
     addwf delta, w            ; somma il contenuto di delta a w e salva il risultato in w
     movwf temp2               ; copia il contenuto di w nel registro temp2
 
-    ; Controlla se temp2 supera 228
+    ; Controlla se temp2 supera 229
     movlw 229                 ; copia la variabile decimale 229 in w
     subwf temp2, w	      ; sottrai 229 a temp2 e copia il risultato in w
     btfsc STATUS,STATUS_C_POSITION           ; l'istruzione subwf f,d setta il bit C del registro status nel caso in cui 
